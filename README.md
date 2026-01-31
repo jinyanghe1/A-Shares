@@ -162,3 +162,4 @@ curl "http://localhost:8000/api/analysis/daily-summary"
 1. DeepSeek API 需要配置有效的 API Key 才能使用 AI 分析功能
 2. 东方财富接口为公开接口，请合理使用，避免频繁请求
 3. AI 分析结果仅供参考，不构成投资建议
+# A-Shares
