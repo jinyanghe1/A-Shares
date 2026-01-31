@@ -67,10 +67,15 @@ class DeepSeekService:
             )
 
             if resp.status_code != 200:
-                return f"API 调用失败: {resp.status_code} - {resp.text}"
+                error_msg = f"API 调用失败: {resp.status_code} - {resp.text}"
+                print(error_msg)
+                return error_msg
 
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
+            try:
+                data = resp.json()
+                return data["choices"][0]["message"]["content"]
+            except ValueError:
+                 return f"API 返回了无效的 JSON: {resp.text[:100]}..."
 
         except Exception as e:
             return f"API 调用出错: {str(e)}"

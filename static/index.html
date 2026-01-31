@@ -1039,31 +1039,50 @@
         <div id="correlation" class="tab-content">
             <div class="card mb-3">
                 <div class="card-header">
-                    <h3 class="card-title">📊 双股相关性分析</h3>
+                    <h3 class="card-title">📊 双股/宏观相关性分析</h3>
                 </div>
+                
+                <!-- Helper Selection -->
+                <div class="grid grid-2 mb-3">
+                    <div>
+                        <label class="form-label">从关注列表选择</label>
+                        <select class="input" id="watchListSelect" onchange="fillCorrelationInput(this.value)">
+                            <option value="">-- 选择股票 --</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="form-label">宏观数据快捷填入</label>
+                        <div class="flex gap-1">
+                            <button class="btn btn-sm btn-secondary" onclick="fillCorrelationInput('MACRO_CPI')">CPI</button>
+                            <button class="btn btn-sm btn-secondary" onclick="fillCorrelationInput('MACRO_PMI')">PMI</button>
+                            <button class="btn btn-sm btn-secondary" onclick="fillCorrelationInput('000300')">沪深300</button>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="grid grid-2 mb-3">
                     <div class="form-group">
-                        <label class="form-label">股票/指数 1</label>
-                        <input type="text" class="input" id="corrCode1" placeholder="输入代码，如 600519">
+                        <label class="form-label">资产 1 (股票/指数/宏观)</label>
+                        <input type="text" class="input" id="corrCode1" placeholder="输入代码，如 600519 或 MACRO_CPI">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">股票/指数 2</label>
+                        <label class="form-label">资产 2 (股票/指数/宏观)</label>
                         <input type="text" class="input" id="corrCode2" placeholder="输入代码，如 000858">
                     </div>
                 </div>
 
                 <div class="form-group mb-3">
-                    <label class="form-label">分析天数</label>
+                    <label class="form-label">分析周期</label>
                     <select class="input" id="corrDays">
-                        <option value="30">30天</option>
-                        <option value="60" selected>60天</option>
-                        <option value="90">90天</option>
-                        <option value="120">120天</option>
+                        <option value="60">60天 (约2个月)</option>
+                        <option value="120">120天 (约半年)</option>
+                        <option value="250" selected>250天 (约1年)</option>
+                        <option value="500">500天 (约2年)</option>
                     </select>
                 </div>
 
                 <div class="form-group mb-3">
-                    <label class="form-label">分析指标</label>
+                    <label class="form-label">分析指标 (股票 vs 股票)</label>
                     <div class="flex gap-2">
                         <label style="display: flex; align-items: center; gap: 0.5rem;">
                             <input type="checkbox" value="turnover_rate" class="corr-indicator" checked> 换手率
@@ -1075,6 +1094,9 @@
                             <input type="checkbox" value="ma5" class="corr-indicator" checked> 5日均价
                         </label>
                     </div>
+                    <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.5rem;">
+                        注: 若包含宏观数据(MACRO_*)，将自动使用月度均值进行分析，忽略上述指标选择。
+                    </p>
                 </div>
 
                 <button class="btn btn-primary" onclick="analyzeCorrelation()">
@@ -1092,27 +1114,30 @@
                 </div>
 
                 <!-- 时间序列图表 -->
-                <div class="grid grid-2 mb-3">
-                    <div class="card">
-                        <div class="card-header">
-                            <h3 class="card-title">换手率对比</h3>
+                <div id="corrChartsContainer">
+                    <!-- Standard Charts -->
+                    <div class="grid grid-2 mb-3" id="standardCharts">
+                        <div class="card">
+                            <div class="card-header">
+                                <h3 class="card-title">换手率对比</h3>
+                            </div>
+                            <div id="turnoverChart" class="chart-container"></div>
                         </div>
-                        <div id="turnoverChart" class="chart-container"></div>
+
+                        <div class="card">
+                            <div class="card-header">
+                                <h3 class="card-title">振幅对比</h3>
+                            </div>
+                            <div id="amplitudeChart" class="chart-container"></div>
+                        </div>
                     </div>
 
                     <div class="card">
                         <div class="card-header">
-                            <h3 class="card-title">振幅对比</h3>
+                            <h3 class="card-title">趋势对比</h3>
                         </div>
-                        <div id="amplitudeChart" class="chart-container"></div>
+                        <div id="ma5Chart" class="chart-container"></div>
                     </div>
-                </div>
-
-                <div class="card">
-                    <div class="card-header">
-                        <h3 class="card-title">5日均价对比</h3>
-                    </div>
-                    <div id="ma5Chart" class="chart-container"></div>
                 </div>
             </div>
         </div>
@@ -1829,13 +1854,43 @@
         // Correlation analysis
         let turnoverChart, amplitudeChart, ma5Chart;
 
+        function fillCorrelationInput(value) {
+            if (!value) return;
+            const input1 = document.getElementById('corrCode1');
+            const input2 = document.getElementById('corrCode2');
+            
+            if (!input1.value) {
+                input1.value = value;
+            } else if (!input2.value) {
+                input2.value = value;
+            } else {
+                // If both full, replace the second one
+                input2.value = value;
+            }
+        }
+
+        async function loadWatchListForCorrelation() {
+            const result = await apiCall('/api/stocks/watch-list');
+            if (result.success && result.data) {
+                const select = document.getElementById('watchListSelect');
+                // Keep first option
+                select.innerHTML = '<option value="">-- 从关注列表选择 --</option>';
+                result.data.forEach(item => {
+                    const opt = document.createElement('option');
+                    opt.value = item.code;
+                    opt.textContent = `${item.name} (${item.code})`;
+                    select.appendChild(opt);
+                });
+            }
+        }
+
         async function analyzeCorrelation() {
             const code1 = document.getElementById('corrCode1').value.trim();
             const code2 = document.getElementById('corrCode2').value.trim();
             const days = parseInt(document.getElementById('corrDays').value);
 
             if (!code1 || !code2) {
-                alert('请输入两个股票/指数代码');
+                alert('请输入两个股票/指数/宏观代码');
                 return;
             }
 
@@ -1843,19 +1898,25 @@
                 document.querySelectorAll('.corr-indicator:checked')
             ).map(cb => cb.value);
 
-            if (indicators.length === 0) {
-                alert('请至少选择一个分析指标');
-                return;
-            }
+            // If macro, indicators are ignored anyway
+            
+            // Show loading state
+            const btn = document.querySelector('#correlation .btn-primary');
+            const originalText = btn.textContent;
+            btn.textContent = '分析中...';
+            btn.disabled = true;
 
             const result = await apiCall('/api/analysis/correlation', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({code1, code2, days, indicators})
             });
+            
+            btn.textContent = originalText;
+            btn.disabled = false;
 
             if (!result.success) {
-                alert(result.message || '分析失败，请检查代码是否正确');
+                alert(result.message || '分析失败，请检查代码是否正确或数据源是否可用');
                 return;
             }
 
@@ -1891,86 +1952,102 @@
 
         function renderComparisonCharts(data) {
             const dates = data.time_series.map(d => d.date);
+            const isMacro = data.correlation_matrix.hasOwnProperty('monthly_value');
 
-            // 换手率对比图
-            if (!turnoverChart) {
-                turnoverChart = echarts.init(document.getElementById('turnoverChart'));
+            // 如果是宏观数据分析，隐藏无关图表
+            const standardCharts = document.getElementById('standardCharts');
+            if (isMacro) {
+                standardCharts.style.display = 'none';
+            } else {
+                standardCharts.style.display = 'grid';
+                
+                // 换手率对比图
+                if (!turnoverChart) {
+                    turnoverChart = echarts.init(document.getElementById('turnoverChart'));
+                }
+                turnoverChart.setOption({
+                    tooltip: {trigger: 'axis'},
+                    legend: {data: [data.name1, data.name2], textStyle: {color: '#e8e8e8'}},
+                    xAxis: {type: 'category', data: dates, axisLabel: {color: '#a0a0a0'}},
+                    yAxis: {type: 'value', name: '换手率(%)', nameTextStyle: {color: '#a0a0a0'}, axisLabel: {color: '#a0a0a0'}},
+                    backgroundColor: 'transparent',
+                    series: [
+                        {
+                            name: data.name1,
+                            type: 'line',
+                            data: data.time_series.map(d => d.code1.turnover_rate),
+                            smooth: true,
+                            itemStyle: {color: '#4facfe'}
+                        },
+                        {
+                            name: data.name2,
+                            type: 'line',
+                            data: data.time_series.map(d => d.code2.turnover_rate),
+                            smooth: true,
+                            itemStyle: {color: '#f5576c'}
+                        }
+                    ]
+                });
+
+                // 振幅对比图
+                if (!amplitudeChart) {
+                    amplitudeChart = echarts.init(document.getElementById('amplitudeChart'));
+                }
+                amplitudeChart.setOption({
+                    tooltip: {trigger: 'axis'},
+                    legend: {data: [data.name1, data.name2], textStyle: {color: '#e8e8e8'}},
+                    xAxis: {type: 'category', data: dates, axisLabel: {color: '#a0a0a0'}},
+                    yAxis: {type: 'value', name: '振幅(%)', nameTextStyle: {color: '#a0a0a0'}, axisLabel: {color: '#a0a0a0'}},
+                    backgroundColor: 'transparent',
+                    series: [
+                        {
+                            name: data.name1,
+                            type: 'line',
+                            data: data.time_series.map(d => d.code1.amplitude),
+                            smooth: true,
+                            itemStyle: {color: '#4facfe'}
+                        },
+                        {
+                            name: data.name2,
+                            type: 'line',
+                            data: data.time_series.map(d => d.code2.amplitude),
+                            smooth: true,
+                            itemStyle: {color: '#f5576c'}
+                        }
+                    ]
+                });
             }
-            turnoverChart.setOption({
-                tooltip: {trigger: 'axis'},
-                legend: {data: [data.name1, data.name2], textStyle: {color: '#e8e8e8'}},
-                xAxis: {type: 'category', data: dates, axisLabel: {color: '#a0a0a0'}},
-                yAxis: {type: 'value', name: '换手率(%)', nameTextStyle: {color: '#a0a0a0'}, axisLabel: {color: '#a0a0a0'}},
-                backgroundColor: 'transparent',
-                series: [
-                    {
-                        name: data.name1,
-                        type: 'line',
-                        data: data.time_series.map(d => d.code1.turnover_rate),
-                        smooth: true,
-                        itemStyle: {color: '#4facfe'}
-                    },
-                    {
-                        name: data.name2,
-                        type: 'line',
-                        data: data.time_series.map(d => d.code2.turnover_rate),
-                        smooth: true,
-                        itemStyle: {color: '#f5576c'}
-                    }
-                ]
-            });
 
-            // 振幅对比图
-            if (!amplitudeChart) {
-                amplitudeChart = echarts.init(document.getElementById('amplitudeChart'));
-            }
-            amplitudeChart.setOption({
-                tooltip: {trigger: 'axis'},
-                legend: {data: [data.name1, data.name2], textStyle: {color: '#e8e8e8'}},
-                xAxis: {type: 'category', data: dates, axisLabel: {color: '#a0a0a0'}},
-                yAxis: {type: 'value', name: '振幅(%)', nameTextStyle: {color: '#a0a0a0'}, axisLabel: {color: '#a0a0a0'}},
-                backgroundColor: 'transparent',
-                series: [
-                    {
-                        name: data.name1,
-                        type: 'line',
-                        data: data.time_series.map(d => d.code1.amplitude),
-                        smooth: true,
-                        itemStyle: {color: '#4facfe'}
-                    },
-                    {
-                        name: data.name2,
-                        type: 'line',
-                        data: data.time_series.map(d => d.code2.amplitude),
-                        smooth: true,
-                        itemStyle: {color: '#f5576c'}
-                    }
-                ]
-            });
-
-            // 5日均价对比图（双Y轴）
+            // 趋势/MA5/Value对比图（双Y轴）
             if (!ma5Chart) {
                 ma5Chart = echarts.init(document.getElementById('ma5Chart'));
             }
+            
+            // 重新设置大小以适应容器变化
+            ma5Chart.resize();
 
-            const ma5Data1 = data.time_series.map(d => d.code1.ma5).filter(v => v !== null);
-            const ma5Data2 = data.time_series.map(d => d.code2.ma5).filter(v => v !== null);
-            const ma5Dates = dates.slice(-ma5Data1.length);
+            const ma5Data1 = data.time_series.map(d => d.code1.ma5).filter(v => v !== null && v !== undefined);
+            const ma5Data2 = data.time_series.map(d => d.code2.ma5).filter(v => v !== null && v !== undefined);
+            const ma5Dates = dates.slice(-ma5Data1.length); // Assuming alignment aligns to end
+
+            // Update title based on mode
+            const chartTitle = isMacro ? '月度数值对比' : '5日均价对比';
+            document.querySelector('#ma5Chart').previousElementSibling.querySelector('h3').textContent = chartTitle;
 
             ma5Chart.setOption({
                 tooltip: {trigger: 'axis'},
                 legend: {data: [data.name1, data.name2], textStyle: {color: '#e8e8e8'}},
-                xAxis: {type: 'category', data: ma5Dates, axisLabel: {color: '#a0a0a0'}},
+                xAxis: {type: 'category', data: dates, axisLabel: {color: '#a0a0a0'}},
                 yAxis: [
-                    {type: 'value', name: data.name1, position: 'left', nameTextStyle: {color: '#4facfe'}, axisLabel: {color: '#a0a0a0'}},
-                    {type: 'value', name: data.name2, position: 'right', nameTextStyle: {color: '#f5576c'}, axisLabel: {color: '#a0a0a0'}}
+                    {type: 'value', name: data.name1, position: 'left', nameTextStyle: {color: '#4facfe'}, axisLabel: {color: '#a0a0a0'}, scale: true},
+                    {type: 'value', name: data.name2, position: 'right', nameTextStyle: {color: '#f5576c'}, axisLabel: {color: '#a0a0a0'}, scale: true}
                 ],
                 backgroundColor: 'transparent',
                 series: [
                     {
                         name: data.name1,
                         type: 'line',
-                        data: ma5Data1,
+                        data: data.time_series.map(d => d.code1.ma5), // Using 'ma5' field for value in macro mode too
                         smooth: true,
                         yAxisIndex: 0,
                         itemStyle: {color: '#4facfe'}
@@ -1978,7 +2055,7 @@
                     {
                         name: data.name2,
                         type: 'line',
-                        data: ma5Data2,
+                        data: data.time_series.map(d => d.code2.ma5),
                         smooth: true,
                         yAxisIndex: 1,
                         itemStyle: {color: '#f5576c'}
@@ -1995,6 +2072,7 @@
             loadMarketSentiment();
             loadWatchListQuotes();
             loadAlerts();
+            loadWatchListForCorrelation(); // Add this
         }
 
         // Close search results when clicking outside
