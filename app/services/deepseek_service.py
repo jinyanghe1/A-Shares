@@ -67,18 +67,38 @@ class DeepSeekService:
             )
 
             if resp.status_code != 200:
-                error_msg = f"API 调用失败: {resp.status_code} - {resp.text}"
-                print(error_msg)
-                return error_msg
+                error_msg = f"API 调用失败: {resp.status_code}"
+                print(f"{error_msg} - Response: {resp.text[:200]}")
+                return f"抱歉，AI分析服务暂时不可用。状态码: {resp.status_code}"
 
             try:
                 data = resp.json()
-                return data["choices"][0]["message"]["content"]
-            except ValueError:
-                 return f"API 返回了无效的 JSON: {resp.text[:100]}..."
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
 
+                if not content:
+                    print(f"DeepSeek 返回了空内容: {data}")
+                    return "抱歉，AI分析未能生成有效内容，请稍后重试。"
+
+                # 清理返回的内容，确保它是安全的字符串
+                # 移除可能导致JSON序列化问题的特殊字符
+                cleaned_content = str(content).strip()
+
+                return cleaned_content
+
+            except (ValueError, KeyError, IndexError) as e:
+                error_text = resp.text[:200] if hasattr(resp, 'text') else "无法获取响应内容"
+                print(f"解析 DeepSeek 响应失败: {e}, Response: {error_text}")
+                return f"抱歉，AI返回的数据格式异常，请稍后重试。"
+
+        except httpx.TimeoutException:
+            print("DeepSeek API 请求超时")
+            return "抱歉，AI分析请求超时，请稍后重试。"
+        except httpx.HTTPError as e:
+            print(f"DeepSeek API HTTP 错误: {e}")
+            return f"抱歉，AI分析服务连接失败，请检查网络连接。"
         except Exception as e:
-            return f"API 调用出错: {str(e)}"
+            print(f"DeepSeek API 调用异常: {type(e).__name__}: {str(e)}")
+            return f"抱歉，AI分析出现未知错误，请稍后重试。"
 
     async def analyze_news(self, news_title: str, news_content: str, stock_name: str = "") -> str:
         """
@@ -147,42 +167,6 @@ class DeepSeekService:
 
         return await self._chat_completion(messages, temperature=0.5)
 
-    async def analyze_market_sentiment(
-        self,
-        up_count: int,
-        down_count: int,
-        limit_up_count: int,
-        limit_down_count: int,
-        north_net_inflow: float
-    ) -> str:
-        """
-        分析市场情绪
-        """
-        system_prompt = """你是一位专业的市场分析师。
-请根据提供的市场数据，分析当前市场情绪和投资环境。
-分析应包括：
-1. 市场整体情绪判断（恐慌/谨慎/中性/乐观/狂热）
-2. 涨跌比分析
-3. 涨停跌停情况解读
-4. 北向资金动向解读
-5. 操作建议
-
-请用中文回答，保持客观专业。不构成投资建议。"""
-
-        data_str = f"""
-上涨家数：{up_count}
-下跌家数：{down_count}
-涨停家数：{limit_up_count}
-跌停家数：{limit_down_count}
-北向资金净流入：{north_net_inflow:.2f} 亿元"""
-
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"请分析以下市场数据：{data_str}"}
-        ]
-
-        return await self._chat_completion(messages, temperature=0.5)
-
     async def interpret_announcement(self, title: str, content: str) -> str:
         """
         解读公司公告
@@ -207,27 +191,43 @@ class DeepSeekService:
     async def generate_daily_summary(
         self,
         watch_list_data: List[Dict[str, Any]],
-        market_sentiment: Dict[str, Any]
+        market_sentiment: Dict[str, Any],
+        indices_data: List[Dict[str, Any]]
     ) -> str:
         """
         生成每日盯盘总结
         """
         system_prompt = """你是一位专业的投资顾问助手。
-请根据用户关注的股票数据和市场情况，生成一份简洁的每日盯盘总结。
-总结应包括：
-1. 市场整体情况
-2. 关注股票表现概览
-3. 值得关注的异动股票
-4. 明日关注要点
-5. 风险提示
+请根据用户关注的股票数据、市场大盘指数和市场情绪情况，生成一份结构化的每日盯盘总结。
 
-请用中文回答，语言简洁专业。"""
+请返回 **纯 JSON 格式** 的数据，不要包含 Markdown 格式标记（如 ```json ... ```）。
+JSON 结构如下：
+{
+    "market_overview": "市场整体情况简述（包括大盘指数表现和市场情绪）",
+    "indices_analysis": [
+        {"name": "指数名称", "change": "涨跌幅描述", "analysis": "简评"}
+    ],
+    "watch_list_summary": "关注股票表现概览",
+    "hot_stocks": [
+        {"name": "股票名称", "code": "代码", "reason": "关注理由"}
+    ],
+    "focus_tomorrow": "明日关注要点",
+    "risks": "风险提示"
+}
+
+请确保 JSON 格式合法。内容语言简洁专业。"""
 
         # 构建股票数据摘要
         stocks_summary = "\n".join([
             f"- {s.get('name', '')}({s.get('code', '')}): {s.get('price', 0):.2f}元, "
             f"涨跌幅 {s.get('change_percent', 0):+.2f}%"
-            for s in watch_list_data[:10]  # 最多10只
+            for s in watch_list_data[:15]  # 最多15只
+        ])
+
+        # 构建指数数据摘要
+        indices_summary = "\n".join([
+            f"- {idx.get('name', '')}: {idx.get('price', 0):.2f}, 涨跌幅 {idx.get('change_percent', 0):+.2f}%"
+            for idx in indices_data
         ])
 
         market_str = f"""
@@ -240,6 +240,9 @@ class DeepSeekService:
 
         user_content = f"""请生成今日盯盘总结：
 
+主要股指表现：
+{indices_summary}
+
 {market_str}
 
 关注股票表现：
@@ -250,7 +253,7 @@ class DeepSeekService:
             {"role": "user", "content": user_content}
         ]
 
-        return await self._chat_completion(messages, max_tokens=1500)
+        return await self._chat_completion(messages, max_tokens=2000)
 
 
 # 创建全局实例

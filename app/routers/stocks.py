@@ -88,7 +88,8 @@ async def add_to_watch_list(request: AddWatchRequest):
         code=request.code,
         alert_up=request.alert_up,
         alert_down=request.alert_down,
-        note=request.note
+        note=request.note,
+        group=request.group
     )
     if not item:
         raise HTTPException(status_code=400, detail=f"添加股票 {request.code} 失败，请检查代码是否正确")
@@ -121,6 +122,73 @@ async def update_alert_settings(
     if not item:
         raise HTTPException(status_code=404, detail=f"未在关注列表中找到股票 {code}")
     return {"success": True, "message": "更新成功", "data": item.model_dump(mode="json")}
+
+
+# ============ 分组管理 ============
+
+@router.get("/groups", summary="获取所有分组")
+async def get_groups():
+    """
+    获取所有分组及其股票数量
+    """
+    groups = stock_service.get_groups()
+    return {"success": True, "data": groups}
+
+
+@router.put("/watch-list/{code}/group", summary="更新股票分组")
+async def update_stock_group(
+    code: str,
+    group: str = Query(..., description="目标分组名称")
+):
+    """
+    将股票移动到指定分组
+    """
+    success = stock_service.update_stock_group(code, group)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"未在关注列表中找到股票 {code}")
+    return {"success": True, "message": f"已将股票移动到分组 {group}"}
+
+
+@router.put("/groups/{old_name}/rename", summary="重命名分组")
+async def rename_group(
+    old_name: str,
+    new_name: str = Query(..., description="新分组名称")
+):
+    """
+    重命名分组
+    """
+    if old_name == "default":
+        raise HTTPException(status_code=400, detail="不能重命名默认分组")
+
+    count = stock_service.rename_group(old_name, new_name)
+    return {"success": True, "message": f"已重命名分组，影响 {count} 只股票"}
+
+
+@router.delete("/groups/{group_name}", summary="删除分组")
+async def delete_group(
+    group_name: str,
+    move_to: str = Query("default", description="将股票移动到的目标分组")
+):
+    """
+    删除分组，将其中的股票移动到指定分组
+    """
+    if group_name == "default":
+        raise HTTPException(status_code=400, detail="不能删除默认分组")
+
+    count = stock_service.delete_group(group_name, move_to)
+    return {"success": True, "message": f"已删除分组，{count} 只股票移动到 {move_to}"}
+
+
+@router.get("/watch-list/by-group/{group}", summary="按分组获取关注列表")
+async def get_watch_list_by_group(group: str):
+    """
+    获取指定分组的关注列表
+    """
+    watch_list = stock_service.get_watch_list(group=group)
+    return {
+        "success": True,
+        "data": [item.model_dump(mode="json") for item in watch_list]
+    }
 
 
 @router.get("/market/sentiment", summary="获取市场情绪")

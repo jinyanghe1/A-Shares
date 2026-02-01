@@ -11,6 +11,11 @@ import os
 from app.config import settings
 from app.routers import stocks, alerts
 from app.routers.analysis import router as analysis_router
+from app.routers.market import router as market_router
+from app.routers.portfolio import router as portfolio_router
+from app.routers.export import router as export_router
+from app.routers.screener import router as screener_router
+from app.routers.us_stock import router as us_stock_router
 from app.services.stock_service import stock_service
 from app.services.alert_service import alert_service
 from app.services.deepseek_service import deepseek_service
@@ -130,6 +135,11 @@ app.add_middleware(
 app.include_router(stocks.router)
 app.include_router(alerts.router)
 app.include_router(analysis_router)
+app.include_router(market_router)
+app.include_router(portfolio_router)
+app.include_router(export_router)
+app.include_router(screener_router)
+app.include_router(us_stock_router)
 
 # 获取项目根目录
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

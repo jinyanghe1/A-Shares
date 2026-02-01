@@ -49,7 +49,8 @@ class StockService:
         code: str,
         alert_up: Optional[float] = None,
         alert_down: Optional[float] = None,
-        note: str = ""
+        note: str = "",
+        group: str = "default"
     ) -> Optional[WatchListItem]:
         """添加股票到关注列表"""
         # 获取股票信息
@@ -57,7 +58,7 @@ class StockService:
         if not quote:
              # 尝试备用源
             quote = await biying_api.get_stock_quote(code)
-        
+
         if not quote:
             return None
 
@@ -67,7 +68,8 @@ class StockService:
             added_time=datetime.now(),
             alert_up=alert_up,
             alert_down=alert_down,
-            note=note
+            note=note,
+            group=group
         )
         self.watch_list[code] = item
         self._save_watch_list()
@@ -81,9 +83,61 @@ class StockService:
             return True
         return False
 
-    def get_watch_list(self) -> List[WatchListItem]:
-        """获取关注列表"""
-        return list(self.watch_list.values())
+    def get_watch_list(self, group: str = None) -> List[WatchListItem]:
+        """获取关注列表，可按分组筛选"""
+        items = list(self.watch_list.values())
+        if group:
+            items = [item for item in items if item.group == group]
+        return items
+
+    def get_groups(self) -> List[Dict[str, Any]]:
+        """获取所有分组及其股票数量"""
+        groups = {}
+        for item in self.watch_list.values():
+            g = item.group or "default"
+            if g not in groups:
+                groups[g] = {"name": g, "count": 0, "codes": []}
+            groups[g]["count"] += 1
+            groups[g]["codes"].append(item.code)
+
+        # 确保default组存在
+        if "default" not in groups:
+            groups["default"] = {"name": "default", "count": 0, "codes": []}
+
+        return list(groups.values())
+
+    def update_stock_group(self, code: str, group: str) -> bool:
+        """更新股票所属分组"""
+        if code in self.watch_list:
+            self.watch_list[code].group = group
+            self._save_watch_list()
+            return True
+        return False
+
+    def rename_group(self, old_name: str, new_name: str) -> int:
+        """重命名分组，返回受影响的股票数量"""
+        count = 0
+        for item in self.watch_list.values():
+            if item.group == old_name:
+                item.group = new_name
+                count += 1
+        if count > 0:
+            self._save_watch_list()
+        return count
+
+    def delete_group(self, group_name: str, move_to: str = "default") -> int:
+        """删除分组，将股票移动到指定分组"""
+        if group_name == "default":
+            return 0  # 不能删除默认分组
+
+        count = 0
+        for item in self.watch_list.values():
+            if item.group == group_name:
+                item.group = move_to
+                count += 1
+        if count > 0:
+            self._save_watch_list()
+        return count
 
     def update_alert_settings(
         self,

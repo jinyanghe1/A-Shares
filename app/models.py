@@ -50,6 +50,7 @@ class WatchListItem(BaseModel):
     alert_up: Optional[float] = Field(None, description="涨幅提醒阈值")
     alert_down: Optional[float] = Field(None, description="跌幅提醒阈值")
     note: str = Field("", description="备注")
+    group: str = Field("default", description="分组名称")
 
 
 class AlertType(str, Enum):
@@ -104,6 +105,7 @@ class AddWatchRequest(BaseModel):
     alert_up: Optional[float] = Field(None, description="涨幅提醒阈值")
     alert_down: Optional[float] = Field(None, description="跌幅提醒阈值")
     note: str = Field("", description="备注")
+    group: str = Field("default", description="分组名称")
 
 
 class AlertSettingRequest(BaseModel):
@@ -126,7 +128,7 @@ class CorrelationRequest(BaseModel):
     """相关性分析请求"""
     code1: str = Field(..., description="股票/指数1代码")
     code2: str = Field(..., description="股票/指数2代码")
-    days: int = Field(60, description="分析天数", ge=5, le=250)
+    days: int = Field(60, description="分析天数", ge=5, le=5000)
     indicators: List[str] = Field(
         default=["turnover_rate", "amplitude", "ma5"],
         description="分析指标列表"

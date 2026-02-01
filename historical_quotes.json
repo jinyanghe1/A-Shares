@@ -1,1 +1,22 @@
-{}
+{
+  "600418": {
+    "2026-02-01": {
+      "code": "600418",
+      "name": "江淮汽车",
+      "price": 54.7,
+      "change_percent": -0.56,
+      "change": -0.31,
+      "volume": 591426,
+      "amount": 3226522844.0,
+      "high_price": 56.3,
+      "low_price": 53.7,
+      "open_price": 54.83,
+      "pre_close": 55.01,
+      "turnover_rate": 2.71,
+      "pe_ratio": -62.47,
+      "total_value": 119465335568,
+      "flow_value": 119465335568,
+      "update_time": "2026-02-01T13:35:32.127905"
+    }
+  }
+}

@@ -6,6 +6,7 @@ from datetime import datetime
 from collections import defaultdict
 from app.utils.eastmoney import eastmoney_api
 from app.utils.nbs import nbs_api
+from app.utils.akshare_macro import akshare_macro_service
 from app.services.stock_service import stock_service
 
 
@@ -61,45 +62,91 @@ class AnalysisService:
 
     async def get_macro_data_series(self, code: str, months: int = 12) -> List[Dict[str, Any]]:
         """获取宏观数据序列"""
+        # 优先使用国家统计局API（最新数据）
         if code == "MACRO_CPI":
             return await nbs_api.get_cpi_monthly(months)
         elif code == "MACRO_PMI":
-            # 暂时使用 Manufacturing PMI
             return await nbs_api.get_pmi_manufacturing(months)
-        # TODO: Add LPR / Margin Balance if source available
+        elif code == "MACRO_PMI_NON":
+            return await nbs_api.get_pmi_non_manufacturing(months)
+
+        # 使用AKshare获取其他宏观数据
+        elif code in ["MACRO_GDP", "MACRO_INDUSTRIAL", "MACRO_FIXED_INVESTMENT",
+                      "MACRO_RETAIL", "MACRO_PPI", "MACRO_M1", "MACRO_M2",
+                      "MACRO_FINANCING", "MACRO_EXCHANGE", "MACRO_UNEMPLOYMENT", "MACRO_TRADE"]:
+            return await akshare_macro_service.get_macro_data(code, months)
+
         return []
 
-    def resample_stock_to_monthly(self, daily_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """将日线数据重采样为月度均值"""
-        monthly_groups = defaultdict(list)
-        
+    def resample_stock_to_monthly(
+        self,
+        daily_data: List[Dict[str, Any]],
+        indicators: List[str] = None
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        将日线数据重采样为月度数据
+        返回：字典，键为指标名，值为月度数据列表
+        """
+        if indicators is None:
+            indicators = ["close"]  # 默认只返回收盘价
+
+        monthly_groups = defaultdict(lambda: defaultdict(list))
+
         for item in daily_data:
-            # item['date'] format: "2023-12-01"
             try:
                 dt = datetime.strptime(item["date"], "%Y-%m-%d")
-                month_key = dt.strftime("%Y年%m月") # Match NBS format "2023年12月"
-                # NBS sometimes returns "202312", need to align formats.
-                # NBSAPI returns "YYYY年MM月" via time_map.
-                monthly_groups[month_key].append(item["close"])
-            except ValueError:
+                month_key = dt.strftime("%Y年%m月")
+
+                # 收集各个指标的数据
+                for indicator in indicators:
+                    if indicator == "ma5":
+                        # ma5需要特殊处理，使用收盘价
+                        value = item.get("close", 0)
+                    else:
+                        value = item.get(indicator, 0)
+
+                    # 确保值是数字类型
+                    if isinstance(value, (list, tuple)):
+                        value = float(value[0]) if value else 0.0
+                    else:
+                        value = float(value)
+
+                    monthly_groups[month_key][indicator].append(value)
+
+            except (ValueError, TypeError, KeyError) as e:
+                print(f"处理日线数据时出错: {e}, item: {item}")
                 continue
-                
-        results = []
-        for month, prices in monthly_groups.items():
-            avg_price = sum(prices) / len(prices)
-            results.append({
-                "date": month,
-                "value": avg_price,
-                "code": month # Used for sorting/aligning
-            })
-            
-        # Sort by date (assuming YYYY年MM月 sorts correctly string-wise, mostly yes)
-        # But better to parse back to sort?
-        # NBS code is YYYYMM (e.g. 202312).
-        # We need to ensure we can match NBS data which has 'code': '202312'.
-        
-        # Let's fix the key to be YYYYMM for easier matching
-        return results
+
+        # 为每个指标构建月度结果
+        results_by_indicator = {}
+        for indicator in indicators:
+            results = []
+            for month, indicators_data in sorted(monthly_groups.items()):
+                values = indicators_data.get(indicator, [])
+                if not values:
+                    continue
+
+                # 确保所有值都是数字
+                valid_values = []
+                for v in values:
+                    try:
+                        valid_values.append(float(v))
+                    except (ValueError, TypeError):
+                        continue
+
+                if not valid_values:
+                    continue
+
+                # 使用平均值作为月度代表值
+                avg_value = sum(valid_values) / len(valid_values)
+                results.append({
+                    "date": month,
+                    "value": avg_value
+                })
+
+            results_by_indicator[indicator] = results
+
+        return results_by_indicator
 
     async def analyze_correlation(
         self,
@@ -110,6 +157,13 @@ class AnalysisService:
     ) -> Optional[Dict[str, Any]]:
         """
         分析两只股票/宏观数据的相关性
+        支持的指标：
+        - turnover_rate: 换手率相关性
+        - amplitude: 振幅相关性
+        - ma5: 5日均价相关性
+        - volume: 成交量相关性（新增）
+        - change_percent: 涨跌幅相关性（新增）
+        - volatility: 波动率相关性（新增）
         """
         if indicators is None:
             indicators = ["turnover_rate", "amplitude", "ma5"]
@@ -154,6 +208,21 @@ class AnalysisService:
         ma5_1 = self.calculate_ma(close1, 5)
         ma5_2 = self.calculate_ma(close2, 5)
 
+        # 计算波动率（收盘价的标准差，使用滚动窗口）
+        def calculate_volatility(prices, window=5):
+            """计算滚动波动率"""
+            volatility = []
+            for i in range(window - 1, len(prices)):
+                window_prices = prices[i - window + 1:i + 1]
+                if len(window_prices) >= 2:
+                    volatility.append(np.std(window_prices))
+                else:
+                    volatility.append(0.0)
+            return volatility
+
+        volatility1 = calculate_volatility(close1)
+        volatility2 = calculate_volatility(close2)
+
         # 计算相关性矩阵
         correlation_matrix = {}
 
@@ -165,6 +234,32 @@ class AnalysisService:
                     correlation_matrix[indicator] = {
                         "value": round(corr_value, 4),
                         "description": "5日均价相关性",
+                        "level": level,
+                        "color": color
+                    }
+            elif indicator == "volume":
+                # 成交量相关性
+                values1 = [d.get("volume", 0) for d in aligned_data1]
+                values2 = [d.get("volume", 0) for d in aligned_data2]
+
+                corr_value = self.calculate_correlation(values1, values2)
+                level, color = self.get_correlation_level(corr_value)
+
+                correlation_matrix[indicator] = {
+                    "value": round(corr_value, 4),
+                    "description": "成交量相关性",
+                    "level": level,
+                    "color": color
+                }
+            elif indicator == "volatility":
+                # 波动率相关性
+                if len(volatility1) >= 2 and len(volatility2) >= 2:
+                    corr_value = self.calculate_correlation(volatility1, volatility2)
+                    level, color = self.get_correlation_level(corr_value)
+
+                    correlation_matrix[indicator] = {
+                        "value": round(corr_value, 4),
+                        "description": "波动率相关性",
                         "level": level,
                         "color": color
                     }
@@ -191,6 +286,7 @@ class AnalysisService:
         # 构建时间序列数据（用于图表）
         time_series = []
         ma5_start_idx = len(common_dates) - len(ma5_1)
+        volatility_start_idx = len(common_dates) - len(volatility1)
 
         for i, date in enumerate(common_dates):
             item = {
@@ -199,15 +295,19 @@ class AnalysisService:
                     "turnover_rate": aligned_data1[i].get("turnover_rate", 0),
                     "amplitude": aligned_data1[i].get("amplitude", 0),
                     "change_percent": aligned_data1[i].get("change_percent", 0),
+                    "volume": aligned_data1[i].get("volume", 0),
                     "close": aligned_data1[i].get("close", 0),
-                    "ma5": ma5_1[i - ma5_start_idx] if i >= ma5_start_idx else None
+                    "ma5": ma5_1[i - ma5_start_idx] if i >= ma5_start_idx else None,
+                    "volatility": volatility1[i - volatility_start_idx] if i >= volatility_start_idx else None
                 },
                 "code2": {
                     "turnover_rate": aligned_data2[i].get("turnover_rate", 0),
                     "amplitude": aligned_data2[i].get("amplitude", 0),
                     "change_percent": aligned_data2[i].get("change_percent", 0),
+                    "volume": aligned_data2[i].get("volume", 0),
                     "close": aligned_data2[i].get("close", 0),
-                    "ma5": ma5_2[i - ma5_start_idx] if i >= ma5_start_idx else None
+                    "ma5": ma5_2[i - ma5_start_idx] if i >= ma5_start_idx else None,
+                    "volatility": volatility2[i - volatility_start_idx] if i >= volatility_start_idx else None
                 }
             }
             time_series.append(item)
@@ -231,77 +331,167 @@ class AnalysisService:
     ) -> Optional[Dict[str, Any]]:
         """分析宏观数据与股票/宏观数据的相关性（月度）"""
         # 1. Fetch Data
-        # Macro data is Monthly. Stock data is Daily (needs resampling).
-        # Calculate months needed based on days (approx days/30)
-        months_needed = max(12, int(days / 30) + 1) # Minimum 12 months for good stats
-        
+        months_needed = max(12, int(days / 30) + 1)
+
+        # 宏观数据名称映射
+        macro_names = {
+            "MACRO_CPI": "CPI指数",
+            "MACRO_PPI": "PPI指数",
+            "MACRO_PMI": "制造业PMI",
+            "MACRO_PMI_NON": "非制造业PMI",
+            "MACRO_GDP": "GDP",
+            "MACRO_M1": "M1货币供应",
+            "MACRO_M2": "M2货币供应",
+            "MACRO_INDUSTRIAL": "工业增加值",
+            "MACRO_FIXED_INVESTMENT": "固定资产投资",
+            "MACRO_RETAIL": "社消零售总额",
+            "MACRO_FINANCING": "社会融资规模",
+            "MACRO_EXCHANGE": "美元汇率",
+            "MACRO_UNEMPLOYMENT": "失业率",
+            "MACRO_TRADE": "进出口总额"
+        }
+
+        # 指标名称映射
+        indicator_names = {
+            "close": "收盘价",
+            "turnover_rate": "换手率",
+            "amplitude": "振幅",
+            "volume": "成交量",
+            "change_percent": "涨跌幅",
+            "ma5": "5日均价"
+        }
+
         # Prepare Data 1
-        data1_monthly = []
+        data1_by_indicator = {}
         name1 = code1
-        if code1.startswith("MACRO_"):
-            data1_monthly = await self.get_macro_data_series(code1, months_needed)
-            macro_names = {"MACRO_CPI": "CPI指数", "MACRO_PMI": "制造业PMI"}
+        is_macro1 = code1.startswith("MACRO_")
+
+        if is_macro1:
+            # 宏观数据只有一个值序列
+            macro_data = await self.get_macro_data_series(code1, months_needed)
+            data1_by_indicator["value"] = macro_data
             name1 = macro_names.get(code1, code1)
         else:
-            stock_data = await eastmoney_api.get_kline_data(code1, days=months_needed*30) # Fetch enough daily data
-            data1_monthly = self.resample_stock_to_monthly(stock_data)
+            # 股票数据，按指标重采样
+            stock_data = await eastmoney_api.get_kline_data(code1, days=months_needed*30)
+            if stock_data:
+                data1_by_indicator = self.resample_stock_to_monthly(stock_data, indicators)
             quote = await stock_service.get_quote(code1)
             name1 = quote.name if quote else code1
 
         # Prepare Data 2
-        data2_monthly = []
+        data2_by_indicator = {}
         name2 = code2
-        if code2.startswith("MACRO_"):
-            data2_monthly = await self.get_macro_data_series(code2, months_needed)
-            macro_names = {"MACRO_CPI": "CPI指数", "MACRO_PMI": "制造业PMI"}
+        is_macro2 = code2.startswith("MACRO_")
+
+        if is_macro2:
+            macro_data = await self.get_macro_data_series(code2, months_needed)
+            data2_by_indicator["value"] = macro_data
             name2 = macro_names.get(code2, code2)
         else:
             stock_data = await eastmoney_api.get_kline_data(code2, days=months_needed*30)
-            data2_monthly = self.resample_stock_to_monthly(stock_data)
+            if stock_data:
+                data2_by_indicator = self.resample_stock_to_monthly(stock_data, indicators)
             quote = await stock_service.get_quote(code2)
             name2 = quote.name if quote else code2
 
-        if not data1_monthly or not data2_monthly:
+        # 检查是否有数据
+        if not data1_by_indicator or not data2_by_indicator:
+            print(f"宏观数据分析失败: data1={len(data1_by_indicator)}, data2={len(data2_by_indicator)}")
             return None
-            
-        # 2. Align Data by Date (Month string "YYYY年MM月")
-        # NBS returns "YYYY年MM月". 
-        # My resample returns "YYYY年MM月".
-        # Need to ensure they match exactly.
-        
-        dict1 = {d["date"]: d["value"] for d in data1_monthly}
-        dict2 = {d["date"]: d["value"] for d in data2_monthly}
-        
-        common_months = sorted(set(dict1.keys()) & set(dict2.keys()))
-        
-        if len(common_months) < 3: # Need at least 3 points
+
+        # 2. 根据数据类型组合，计算相关性
+        correlation_matrix = {}
+        time_series_data = {}
+
+        if is_macro1 and is_macro2:
+            # 两个都是宏观数据：只计算一个相关性
+            data1 = data1_by_indicator.get("value", [])
+            data2 = data2_by_indicator.get("value", [])
+
+            dict1 = {d["date"]: float(d["value"]) for d in data1}
+            dict2 = {d["date"]: float(d["value"]) for d in data2}
+            common_months = sorted(set(dict1.keys()) & set(dict2.keys()))
+
+            if len(common_months) >= 3:
+                values1 = [dict1[m] for m in common_months]
+                values2 = [dict2[m] for m in common_months]
+
+                corr_value = self.calculate_correlation(values1, values2)
+                level, color = self.get_correlation_level(corr_value)
+
+                correlation_matrix["monthly_value"] = {
+                    "value": round(corr_value, 4),
+                    "description": "月度数值相关性",
+                    "level": level,
+                    "color": color
+                }
+
+                time_series_data["monthly_value"] = {
+                    "dates": common_months,
+                    "values1": values1,
+                    "values2": values2
+                }
+
+        elif is_macro1 or is_macro2:
+            # 一个是宏观，一个是股票：对每个指标计算相关性
+            macro_data = data1_by_indicator.get("value", []) if is_macro1 else data2_by_indicator.get("value", [])
+            stock_data_dict = data2_by_indicator if is_macro1 else data1_by_indicator
+
+            # 构建宏观数据字典
+            macro_dict = {d["date"]: float(d["value"]) for d in macro_data}
+
+            for indicator in indicators:
+                stock_monthly = stock_data_dict.get(indicator, [])
+                if not stock_monthly:
+                    continue
+
+                stock_dict = {d["date"]: float(d["value"]) for d in stock_monthly}
+                common_months = sorted(set(macro_dict.keys()) & set(stock_dict.keys()))
+
+                if len(common_months) < 3:
+                    continue
+
+                macro_values = [macro_dict[m] for m in common_months]
+                stock_values = [stock_dict[m] for m in common_months]
+
+                # 如果是宏观在code1位置，顺序不变；否则交换
+                values1 = macro_values if is_macro1 else stock_values
+                values2 = stock_values if is_macro1 else macro_values
+
+                corr_value = self.calculate_correlation(values1, values2)
+                level, color = self.get_correlation_level(corr_value)
+
+                indicator_desc = indicator_names.get(indicator, indicator)
+                correlation_matrix[indicator] = {
+                    "value": round(corr_value, 4),
+                    "description": f"{indicator_desc}相关性",
+                    "level": level,
+                    "color": color
+                }
+
+                time_series_data[indicator] = {
+                    "dates": common_months,
+                    "values1": values1,
+                    "values2": values2
+                }
+
+        if not correlation_matrix:
+            print("未能计算出有效的相关性")
             return None
-            
-        aligned_values1 = [dict1[m] for m in common_months]
-        aligned_values2 = [dict2[m] for m in common_months]
-        
-        # 3. Calculate Correlation
-        corr_value = self.calculate_correlation(aligned_values1, aligned_values2)
-        level, color = self.get_correlation_level(corr_value)
-        
-        # 4. Build Result
-        correlation_matrix = {
-            "monthly_value": {
-                "value": round(corr_value, 4),
-                "description": "月度数值相关性",
-                "level": level,
-                "color": color
-            }
-        }
-        
+
+        # 3. 构建时间序列（使用第一个有效指标）
+        first_indicator = list(time_series_data.keys())[0]
+        ts_data = time_series_data[first_indicator]
+
         time_series = []
-        for i, month in enumerate(common_months):
+        for i, month in enumerate(ts_data["dates"]):
             time_series.append({
                 "date": month,
-                "code1": {"ma5": aligned_values1[i]}, # Reuse ma5 field for value to fit chart
-                "code2": {"ma5": aligned_values2[i]}
+                "code1": {"ma5": ts_data["values1"][i]},
+                "code2": {"ma5": ts_data["values2"][i]}
             })
-            
+
         return {
             "code1": code1,
             "code2": code2,
@@ -309,7 +499,7 @@ class AnalysisService:
             "name2": name2,
             "correlation_matrix": correlation_matrix,
             "time_series": time_series,
-            "days": len(common_months) * 30 # Approximate days
+            "days": len(ts_data["dates"]) * 30
         }
 
 
